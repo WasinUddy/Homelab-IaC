@@ -1,0 +1,60 @@
+- name: K8S Database Server
+  hosts: server
+  remote_user: ase
+  become: yes
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Update and upgrade all packages
+      ansible.builtin.apt:
+        update_cache: true
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Disable IPv6 with sysctl
+      ansible.posix.sysctl:
+        name: "{{ item }}"
+        value: "1"
+        state: "present"
+        reload: "yes"
+      with_items:
+        - net.ipv6.conf.all.disable_ipv6
+        - net.ipv6.conf.default.disable_ipv6
+        - net.ipv6.conf.lo.disable_ipv6
+
+    # Copy Private Key to ssh into master
+    - name: Copy Private Key
+      copy:
+        src: keys/id_ed25519
+        dest: /home/ase/.ssh/id_ed25519
+        mode: 0600
+
+    # Install Microk8s with snap
+    - name: Install Microk8s
+      ansible.builtin.snap:
+        name: microk8s
+        classic: yes
+        state: present
+
+    # Enable Microk8s and wait for it to be ready
+    - name: Enable Microk8s
+      command: microk8s start 
+
+    - name: Wait for Microk8s to be ready
+      command: microk8s status --wait-ready
+    
+    # SSH into master to grab join command
+    - name: SSH into master to grab join command
+      command: ssh -o StrictHostKeyChecking=no -i /home/ase/.ssh/id_ed25519 wasin@10.0.60.10 'microk8s add-node'
+      register: join_command_output
+      changed_when: False 
+
+    - name: Extract join command
+      set_fact:
+        join_command_part: "{{ join_command_output.stdout_lines[1] | regex_replace('^(microk8s join [^/]*/)', '') }}"
+
+    - name: Join the cluster
+      command: "microk8s join 10.0.60.10:25000/{{ join_command_part }} --worker"
